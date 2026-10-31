@@ -1,9 +1,4 @@
-"""Refresh TTC subway delays and code descriptions in PostgreSQL.
-
-The published 'since 2025' data is treated as a complete snapshot. Each run
-atomically refreshes the newest ROLLING_MONTHS calendar months, so rerunning
-cannot duplicate records and upstream corrections are picked up.
-"""
+"""Refresh TTC subway, bus, and streetcar delays in PostgreSQL."""
 import io
 import os
 from datetime import date, datetime
@@ -13,20 +8,19 @@ from sqlalchemy import text
 
 from fetch_data import list_resources, find_resource, download_resource
 
-COLUMNS = (
-    "date", "time", "day", "station", "code", "min_delay",
-    "min_gap", "bound", "line", "vehicle",
-)
-REQUIRED_COLUMNS = {"date", "time", "station", "code", "min_delay", "line"}
-MAX_LENGTHS = {"day": 15, "station": 100, "code": 10,
-               "bound": 5, "vehicle": 20}
+# Subway definitions
+SUBWAY_COLUMNS = ("date", "time", "day", "station", "code", "min_delay", "min_gap", "bound", "line", "vehicle")
+SUBWAY_REQUIRED = {"date", "time", "station", "code", "min_delay", "line"}
+MAX_LENGTHS = {"day": 15, "station": 100, "code": 10, "bound": 5, "vehicle": 20}
 
+# Surface definitions (Bus & Streetcar)
+SURFACE_COLUMNS = ("report_date", "time", "day", "route", "location", "incident", "min_delay", "min_gap", "direction", "vehicle")
+SURFACE_REQUIRED = {"report_date", "time", "route", "location", "incident", "min_delay"}
 
 def parse_resource(resource, response):
     fmt = str(resource.get("format", "")).upper()
     if fmt == "CSV":
-        return pd.read_csv(io.BytesIO(response.content), dtype=str,
-                           keep_default_na=False, encoding="utf-8-sig")
+        return pd.read_csv(io.BytesIO(response.content), dtype=str, keep_default_na=False, encoding="utf-8-sig")
     if fmt == "JSON":
         data = response.json()
         if not isinstance(data, list):
@@ -34,41 +28,38 @@ def parse_resource(resource, response):
         return pd.DataFrame(data)
     raise ValueError(f"Unsupported resource format: {fmt}")
 
-
 def parse_time(raw):
     value = str(raw).strip()
     if not value:
         return None
-    try:
-        return datetime.strptime(value, "%H:%M").time()
-    except ValueError:
-        return datetime.strptime(value, "%H:%M:%S").time()
-
+    for time_format in ("%H:%M", "%H:%M:%S", "%I:%M %p", "%I:%M:%S %p"):
+        try:
+            return datetime.strptime(value, time_format).time()
+        except ValueError:
+            continue
+    return None
 
 def normalize_delays(raw):
-    """Validate and convert downloaded data to the existing 10 non-ID columns."""
+    """Validate and convert downloaded SUBWAY data."""
     df = raw.copy()
-    df.columns = [str(col).strip().lower().replace(" ", "_").replace(".", "_")
-                  for col in df.columns]
-    missing = REQUIRED_COLUMNS - set(df.columns)
+    df.columns = [str(col).strip().lower().replace(" ", "_").replace(".", "_") for col in df.columns]
+    missing = SUBWAY_REQUIRED - set(df.columns)
     if missing:
-        raise ValueError(f"Delay data is missing required columns: {sorted(missing)}")
+        raise ValueError(f"Subway delay data is missing required columns: {sorted(missing)}")
     if df.empty:
-        raise ValueError("Downloaded TTC delay dataset contains no records")
+        raise ValueError("Downloaded TTC subway dataset contains no records")
 
-    for column in COLUMNS:
+    for column in SUBWAY_COLUMNS:
         if column not in df:
             df[column] = None
 
-    # Reject invalid dates before touching the database.
     df["date"] = pd.to_datetime(df["date"], errors="raise").dt.date
     df["time"] = df["time"].map(parse_time)
     if df["time"].isna().any():
-        raise ValueError("Some TTC records are missing a time")
+        raise ValueError("Some TTC subway records are missing a time")
 
     for column in ("min_delay", "min_gap"):
         numeric = pd.to_numeric(df[column], errors="coerce")
-        # NULL is allowed in the table, but invalid nonblank numeric values are not.
         invalid = numeric.isna() & df[column].notna() & (df[column].astype(str).str.strip() != "")
         if invalid.any():
             raise ValueError(f"Invalid numeric value in {column}")
@@ -87,22 +78,55 @@ def normalize_delays(raw):
 
     if df["date"].isna().any() or df["line"].isna().any():
         raise ValueError("Date or line cannot be empty")
-    return df[list(COLUMNS)]
+    return df[list(SUBWAY_COLUMNS)]
 
+def normalize_surface(raw, mode):
+    """Validate and convert downloaded BUS and STREETCAR data."""
+    df = raw.copy()
+    df.columns = [str(col).strip().lower().replace(" ", "_").replace(".", "_") for col in df.columns]
+    
+    # Surface files occasionally use 'date' instead of 'report_date'
+    if "date" in df.columns and "report_date" not in df.columns:
+        df.rename(columns={"date": "report_date"}, inplace=True)
+        
+    missing = SURFACE_REQUIRED - set(df.columns)
+    if missing:
+        raise ValueError(f"{mode.title()} data is missing required columns: {sorted(missing)}")
+    if df.empty:
+        raise ValueError(f"Downloaded {mode} dataset contains no records")
 
-def first_month_to_keep(latest_date, months_to_keep):
-    if months_to_keep < 1:
-        raise ValueError("ROLLING_MONTHS must be at least 1")
-    index = latest_date.year * 12 + (latest_date.month - 1) - (months_to_keep - 1)
-    return date(index // 12, index % 12 + 1, 1)
+    for column in SURFACE_COLUMNS:
+        if column not in df:
+            df[column] = None
 
+    df["report_date"] = pd.to_datetime(df["report_date"], errors="raise").dt.date
+    df["time"] = df["time"].map(parse_time)
+
+    for column in ("min_delay", "min_gap"):
+        numeric = pd.to_numeric(df[column], errors="coerce")
+        invalid = numeric.isna() & df[column].notna() & (df[column].astype(str).str.strip() != "")
+        if invalid.any():
+            raise ValueError(f"Invalid numeric value in {column} for {mode}")
+        df[column] = numeric.astype("Int64").astype(object).where(numeric.notna(), None)
+
+    for column in ("day", "route", "location", "incident", "direction", "vehicle"):
+        values = df[column].astype("string").str.strip()
+        if column == "day":
+            missing_day = values.isna() | (values == "")
+            values = values.mask(missing_day, pd.Series(df["report_date"]).map(
+                lambda value: value.strftime("%A")
+            ).astype("string"))
+        df[column] = values.astype(object).where(values.notna() & (values != ""), None)
+
+    if df["report_date"].isna().any() or df["route"].isna().any():
+        raise ValueError(f"Report date or route cannot be empty for {mode}")
+    return df[list(SURFACE_COLUMNS)]
 
 def normalize_codes(resource, response):
     raw = parse_resource(resource, response)
     raw.columns = [str(column).strip().lower() for column in raw.columns]
     if "code" not in raw or "description" not in raw:
         raise ValueError("Code resource lacks code or description")
-    # Deduplicate codes if the resource repeats any; one row per code in SQL.
     codes = {}
     for row in raw[["code", "description"]].itertuples(index=False):
         code = str(row.code).strip()
@@ -112,15 +136,21 @@ def normalize_codes(resource, response):
         raise ValueError("Code resource had no usable codes")
     return [{"code": code, "description": desc} for code, desc in codes.items()]
 
+def first_month_to_keep(latest_date, months_to_keep):
+    if months_to_keep < 1:
+        raise ValueError("ROLLING_MONTHS must be at least 1")
+    index = latest_date.year * 12 + (latest_date.month - 1) - (months_to_keep - 1)
+    return date(index // 12, index % 12 + 1, 1)
 
-def refresh_database(delays, codes, months_to_keep, database_engine):
-    latest_date = max(delays["date"])
+def refresh_database(df, table_name, date_column, months_to_keep, database_engine, codes=None):
+    latest_date = max(df[date_column])
     cutoff = first_month_to_keep(latest_date, months_to_keep)
-    selected = delays[delays["date"] >= cutoff].copy()
+    selected = df[df[date_column] >= cutoff].copy()
     if selected.empty:
-        raise ValueError("No TTC delay records were found inside the rolling window")
-    # Everything is committed together or rolled back together on failure.
+        raise ValueError(f"No records were found inside the rolling window for {table_name}")
+        
     with database_engine.begin() as conn:
+        # Update delay codes if provided (Subway only)
         if codes:
             conn.execute(text("""
                 INSERT INTO delay_codes (code, description)
@@ -129,52 +159,64 @@ def refresh_database(delays, codes, months_to_keep, database_engine):
                 SET description = EXCLUDED.description
             """), codes)
 
-        # Full snapshot replacement: old months fall out, existing months receive
-        # TTC corrections, and the newly published month enters the window.
-        conn.execute(text("DELETE FROM subway_delays"))
-        selected.to_sql("subway_delays", conn, if_exists="append", index=False,
-                        chunksize=400, method="multi")
-        conn.execute(text("DELETE FROM route_summary"))
-        conn.execute(text("""
-            INSERT INTO route_summary (line, mean_delay, max_delay, total_incidents)
-            SELECT line,
-                   ROUND(AVG(min_delay), 2),
-                   MAX(min_delay),
-                   COUNT(*)
-            FROM subway_delays
-            WHERE min_delay > 0 AND line IS NOT NULL
-            GROUP BY line
-        """))
+        # Full snapshot replacement for the mode
+        conn.execute(text(f"DELETE FROM {table_name}"))
+        selected.to_sql(table_name, conn, if_exists="append", index=False, chunksize=400, method="multi")
+        
+        # Maintain legacy route_summary specifically for subway backward compatibility
+        if table_name == "subway_delays":
+            conn.execute(text("DELETE FROM route_summary"))
+            conn.execute(text("""
+                INSERT INTO route_summary (line, mean_delay, max_delay, total_incidents)
+                SELECT line,
+                       ROUND(AVG(min_delay), 2),
+                       MAX(min_delay),
+                       COUNT(*)
+                FROM subway_delays
+                WHERE min_delay > 0 AND line IS NOT NULL
+                GROUP BY line
+            """))
+            
     return cutoff, latest_date, len(selected)
-
 
 def run():
     months_to_keep = int(os.getenv("ROLLING_MONTHS", "12"))
-    resources = list_resources()
-    delay_resource = find_resource(resources, "delays")
-    print(f"Downloading: {delay_resource['name']}")
-    delays = normalize_delays(parse_resource(delay_resource, download_resource(delay_resource)))
-    print(f"Validated {len(delays)} raw delay records")
+    from db import engine
 
-    code_resource = find_resource(resources, "codes", formats=("JSON", "CSV"))
-    codes = normalize_codes(code_resource, download_resource(code_resource))
-    print(f"Validated {len(codes)} delay codes")
-
-    from db import engine  # Only connect when actually importing.
-    from pathlib import Path
-    schema_path = Path(__file__).resolve().parent / "database" / "schema.sql"
-    # The tables should already exist from schema.sql or a prior pg_restore.
-    # Existence check protects existing user-created tables and their data.
+    # Validate schema presence
     with engine.connect() as conn:
-        existing = conn.execute(text("SELECT to_regclass('public.subway_delays')")).scalar()
-        codes_table = conn.execute(text("SELECT to_regclass('public.delay_codes')")).scalar()
-        summary_table = conn.execute(text("SELECT to_regclass('public.route_summary')")).scalar()
-    if not all((existing, codes_table, summary_table)):
-        raise RuntimeError(f"Some tables are missing. First run: psql '$DATABASE_URL' -f {schema_path}")
+        views = conn.execute(text("SELECT to_regclass('public.all_delays')")).scalar()
+        if not views:
+            raise RuntimeError("Database view 'all_delays' is missing. Please have the DB owner run the latest migrations.")
 
-    cutoff, latest, count = refresh_database(delays, codes, months_to_keep, engine)
-    print(f"Success: {count} rows retained ({cutoff} through {latest}).")
+    # 1. Subway Data Refresh
+    print("Fetching Subway data...")
+    subway_res = list_resources("ttc-subway-delay-data")
+    delay_resource = find_resource(subway_res, "subway_delays")
+    delays = normalize_delays(parse_resource(delay_resource, download_resource(delay_resource)))
+    
+    code_resource = find_resource(subway_res, "codes", formats=("JSON", "CSV"))
+    codes = normalize_codes(code_resource, download_resource(code_resource))
+    
+    cutoff, latest, count = refresh_database(delays, "subway_delays", "date", months_to_keep, engine, codes)
+    print(f"Subway Success: {count} rows retained ({cutoff} through {latest}).")
 
+    # 2. Bus Data Refresh
+    print("\nFetching Bus data...")
+    bus_res = list_resources("ttc-bus-delay-data")
+    bus_resource = find_resource(bus_res, "bus_delays")
+    bus_data = normalize_surface(parse_resource(bus_resource, download_resource(bus_resource)), "bus")
+    cutoff, latest, count = refresh_database(bus_data, "bus_delays", "report_date", months_to_keep, engine)
+    print(f"Bus Success: {count} rows retained ({cutoff} through {latest}).")
+
+    # 3. Streetcar Data Refresh
+    print("\nFetching Streetcar data...")
+    streetcar_res = list_resources("ttc-streetcar-delay-data")
+    streetcar_resource = find_resource(streetcar_res, "streetcar_delays")
+    streetcar_data = normalize_surface(parse_resource(streetcar_resource, download_resource(streetcar_resource)), "streetcar")
+    cutoff, latest, count = refresh_database(streetcar_data, "streetcar_delays", "report_date", months_to_keep, engine)
+    print(f"Streetcar Success: {count} rows retained ({cutoff} through {latest}).")
 
 if __name__ == "__main__":
     run()
+

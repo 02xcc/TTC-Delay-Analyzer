@@ -3,26 +3,102 @@
 {% block content %}
 <section class="page-intro page-intro-compact" aria-labelledby="search-title">
     <div class="eyebrow"><span class="eyebrow-dot"></span> Transit performance / Explore</div>
-    <h1 id="search-title">Find delays near <span class="heading-muted">your station.</span></h1>
-    <p class="intro-description">You don't need to know TTC codes. Search by a station name, choose a subway line, or combine both.</p>
+    <h1 id="search-title">Find delays near <span class="heading-muted">your location.</span></h1>
+    <p class="intro-description">Search by location, choose a route, or filter by transit mode to browse historical incidents.</p>
 </section>
 <section class="content-panel search-panel" aria-labelledby="search-form-heading">
-    <div class="section-heading section-heading-tight"><div><div class="overline">FIND HISTORICAL INCIDENTS</div><h2 id="search-form-heading">Search delay records</h2><p>Try “Finch”, “Kennedy”, or choose a line below. Leave both blank to browse recent records.</p></div></div>
+    <div class="section-heading section-heading-tight">
+        <div>
+            <div class="overline">FIND HISTORICAL INCIDENTS</div>
+            <h2 id="search-form-heading">Search delay records</h2>
+            <p>Try searching for "Finch", "Queen", or a specific route number. Leave blank to browse recent records.</p>
+        </div>
+    </div>
     <form action="{{ url_for('search') }}" method="GET" class="search-form search-form-flex" role="search">
-        <div class="search-field search-field-main"><label for="station-query">Station name</label><input id="station-query" type="search" name="station" value="{{ station }}" placeholder="e.g. Finch, Kennedy, Bloor" maxlength="100" list="station-suggestions" autocomplete="off"><datalist id="station-suggestions">{% for name in stations %}<option value="{{ name }}">{% endfor %}</datalist></div>
-        <div class="search-field search-field-line"><label for="line-picker">Subway line <span class="field-optional">(optional)</span></label><select id="line-picker" name="line"><option value="">All lines</option>{% for item in lines %}<option value="{{ item }}" {% if line == item %}selected{% endif %}>{{ line_labels.get(item, item) }}</option>{% endfor %}</select></div>
+        <div class="search-field">
+            <label for="mode-picker">Transit mode</label>
+            <select id="mode-picker" name="mode">
+                <option value="all" {% if mode == 'all' %}selected{% endif %}>All modes</option>
+                <option value="subway" {% if mode == 'subway' %}selected{% endif %}>Subway</option>
+                <option value="bus" {% if mode == 'bus' %}selected{% endif %}>Bus</option>
+                <option value="streetcar" {% if mode == 'streetcar' %}selected{% endif %}>Streetcar</option>
+            </select>
+        </div>
+        <div class="search-field search-field-main">
+            <label for="location-query">Location or station</label>
+            <input id="location-query" type="search" name="location" value="{{ location }}" placeholder="e.g. Finch, Queen, King" maxlength="100" autocomplete="off">
+        </div>
+        <div class="search-field search-field-line">
+            <label for="route-query">Route or line <span class="field-optional">(optional)</span></label>
+            <input id="route-query" type="search" name="route" value="{{ route }}" placeholder="e.g. 501, 25, YU" maxlength="100" autocomplete="off">
+        </div>
         <button class="button button-primary" type="submit">Show delays <span aria-hidden="true">→</span></button>
     </form>
-    <div class="search-quick"><span>Quick searches</span><a href="{{ url_for('search', station='Finch') }}">Finch</a><a href="{{ url_for('search', station='Kennedy') }}">Kennedy</a><a href="{{ url_for('search', line='BD') }}">Bloor–Danforth</a><a href="{{ url_for('search', line='YU') }}">Yonge–University</a></div>
+    <div class="search-quick">
+        <span>Quick searches</span>
+        <a href="{{ url_for('search', mode='subway', location='Finch') }}">Finch (Subway)</a>
+        <a href="{{ url_for('search', mode='streetcar', route='501') }}">501 Streetcar</a>
+        <a href="{{ url_for('search', mode='bus', route='25') }}">25 Bus</a>
+    </div>
 </section>
 <section class="content-panel results-panel" aria-labelledby="results-title">
-    <div class="section-heading section-heading-tight"><div><div class="overline">HISTORICAL RESULTS</div><h2 id="results-title">{% if station or line %}Matching incidents{% else %}Recent recorded delays{% endif %}</h2><p>{% if station or line %}Showing up to {{ result_limit }} most recent matches for your filters.{% else %}Showing up to {{ result_limit }} latest incidents with a positive delay duration.{% endif %}</p></div>{% if not error %}<span class="soft-tag">{{ '{:,}'.format(matches) }} matching records</span>{% endif %}</div>
-    {% if error %}<div class="notice notice-error" role="alert">{{ error }}</div>
+    <div class="section-heading section-heading-tight">
+        <div>
+            <div class="overline">HISTORICAL RESULTS</div>
+            <h2 id="results-title">{% if location or route or (mode and mode != 'all') %}Matching incidents{% else %}Recent recorded delays{% endif %}</h2>
+            <p>{% if location or route or (mode and mode != 'all') %}Showing up to {{ limit | default(50) }} most recent matches for your filters.{% else %}Showing up to {{ limit | default(50) }} latest incidents with a positive delay duration.{% endif %}</p>
+        </div>
+        {% if not error %}<span class="soft-tag">{{ '{:,}'.format(matches) if matches else 0 }} matching records</span>{% endif %}
+    </div>
+    {% if error %}
+        <div class="notice notice-error" role="alert">{{ error }}</div>
     {% elif rows %}
-    <div class="table-scroll"><table class="data-table"><thead><tr><th scope="col">Date</th><th scope="col">Station</th><th scope="col">Line</th><th scope="col" class="numeric">Delay</th><th scope="col">Reason code <a class="header-help" href="{{ url_for('codes') }}" title="What do TTC codes mean?">ⓘ</a></th></tr></thead><tbody>
-        {% for row in rows %}<tr><td class="nowrap">{{ row.date or '—' }}</td><td>{{ row.station or 'Not recorded' }}</td><td><span class="line-pill">{{ line_labels.get(row.line, row.line or '—') }}</span></td><td class="numeric metric-cell">{{ row.min_delay }} <span class="unit">min</span></td><td>{% if row.code %}<a class="code-pill code-link" href="{{ url_for('codes', q=row.code) }}" title="{{ row.code_description or 'Description not available — open the code guide' }}" aria-label="{{ row.code }}: {{ row.code_description or 'Open the code guide' }}">{{ row.code }} <span aria-hidden="true">↗</span></a><span class="code-description">{{ row.code_description or 'Description unavailable' }}</span>{% else %}<span class="unit">—</span>{% endif %}</td></tr>{% endfor %}
-    </tbody></table></div>
-    <p class="table-note">Click or hover over a delay code to learn what it means. Only positive-delay incidents are shown; these are not live alerts. A maximum of {{ result_limit }} records is displayed.</p>
-    {% else %}<div class="empty-state"><div class="empty-icon" aria-hidden="true">⌕</div><h3>No matching records</h3><p>Try only part of the station name, choose “All lines”, or remove one filter.</p><a class="text-link" href="{{ url_for('search') }}">Clear filters →</a></div>{% endif %}
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th scope="col">Date & Time</th>
+                    <th scope="col">Mode</th>
+                    <th scope="col">Route</th>
+                    <th scope="col">Location</th>
+                    <th scope="col" class="numeric">Delay</th>
+                    <th scope="col">Reason <a class="header-help" href="{{ url_for('codes') }}" title="What do TTC codes mean?">ⓘ</a></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in rows %}
+                <tr>
+                    <td class="nowrap">{{ row.date or '—' }}<br><span style="font-size: 11.5px; color: #8a97a1;">{{ row.time or '' }}</span></td>
+                    <td style="text-transform: capitalize;">{{ row.mode }}</td>
+                    <td><span class="line-pill">{{ row.line or '—' }}</span></td>
+                    <td>{{ row.station or 'Not recorded' }}</td>
+                    <td class="numeric metric-cell">{{ row.min_delay }} <span class="unit">min</span></td>
+                    <td>
+                        {% if row.mode == 'subway' %}
+                            {% if row.code %}
+                                <a class="code-pill code-link" href="{{ url_for('codes', q=row.code) }}" title="{{ row.code_description or 'Description not available — open the code guide' }}" aria-label="{{ row.code }}: {{ row.code_description or 'Open the code guide' }}">{{ row.code }} <span aria-hidden="true">↗</span></a>
+                                <span class="code-description">{{ row.code_description or 'Not specified' }}</span>
+                            {% else %}
+                                <span class="unit">—</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="code-description" style="max-width: none; color: #42505d; font-size: 12.5px;">{{ row.code_description or 'Not specified' }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <p class="table-note">Click or hover over a subway delay code to learn what it means. Bus and streetcar incidents display their recorded text. Only positive-delay incidents are shown; these are not live alerts.</p>
+    {% else %}
+    <div class="empty-state">
+        <div class="empty-icon" aria-hidden="true">⌕</div>
+        <h3>No matching records</h3>
+        <p>Try only part of the location name, choose "All modes", or remove one filter.</p>
+        <a class="text-link" href="{{ url_for('search') }}">Clear filters →</a>
+    </div>
+    {% endif %}
 </section>
 {% endblock %}
+
