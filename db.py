@@ -1,9 +1,11 @@
 import os
 from dotenv import load_dotenv
+from sqlalchemy import create_engine
 
 load_dotenv()
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-host = os.getenv("DB_HOST")
-database = os.getenv("DB_NAME")
-user = os.getenv("DB_USER")
-password = os.getenv("DB_PASSWORD")
+if DATABASE_URL and "neon.tech" in DATABASE_URL and "sslmode" not in DATABASE_URL:
+    DATABASE_URL += "?sslmode=require"
+
+engine = create_engine(DATABASE_URL)

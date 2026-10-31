@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <h1>Search Route</h1>
+    <p>Search for historical delays on a specific TTC subway line.</p>
+    
+    <form action="/search" method="GET" class="search-form">
+        <input type="text" name="query" placeholder="Enter subway line..." required>
+        <button type="submit">Search</button>
+    </form>
+
+    <div class="search-results">
+        <p><em>Search query connections to the database will be linked here soon.</em></p>
+    </div>
+{% endblock %}

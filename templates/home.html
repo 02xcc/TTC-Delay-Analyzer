@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <h1>TTC Subway Reliability</h1>
+    <p>Historical delay averages parsed from City of Toronto open data.</p>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Subway Line</th>
+                <th>Average Delay (Mins)</th>
+                <th>Maximum Delay (Mins)</th>
+                <th>Total Incidents</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in routes %}
+            <tr>
+                <td><strong>{{ row.Line }}</strong></td>
+                <td>{{ row.mean_delay }}</td>
+                <td>{{ row.max_delay }}</td>
+                <td>{{ row.total_incidents }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% endblock %}
+
