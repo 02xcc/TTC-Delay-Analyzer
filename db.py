@@ -35,3 +35,4 @@ def get_database_url():
 
 
 engine = create_engine(get_database_url(), pool_pre_ping=True)
+
