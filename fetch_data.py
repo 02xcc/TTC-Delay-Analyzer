@@ -16,3 +16,9 @@ for resource in resources:
     if resource["name"] == "Code Descriptions.json":
         resource_url = resource["url"]
         print(resource_url)
+
+information = requests.get(resource_url)
+information.raise_for_status()
+data = information.json()
+print(type(data))
+print(data)
