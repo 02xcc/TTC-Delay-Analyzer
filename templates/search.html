@@ -1,15 +1,28 @@
 {% extends "base.html" %}
-
+{% block title %}Explore delays · TTC Delay Analyzer{% endblock %}
 {% block content %}
-    <h1>Search Route</h1>
-    <p>Search for historical delays on a specific TTC subway line.</p>
-    
-    <form action="/search" method="GET" class="search-form">
-        <input type="text" name="query" placeholder="Enter subway line..." required>
-        <button type="submit">Search</button>
+<section class="page-intro page-intro-compact" aria-labelledby="search-title">
+    <div class="eyebrow"><span class="eyebrow-dot"></span> Transit performance / Explore</div>
+    <h1 id="search-title">Find delays near <span class="heading-muted">your station.</span></h1>
+    <p class="intro-description">You don't need to know TTC codes. Search by a station name, choose a subway line, or combine both.</p>
+</section>
+<section class="content-panel search-panel" aria-labelledby="search-form-heading">
+    <div class="section-heading section-heading-tight"><div><div class="overline">FIND HISTORICAL INCIDENTS</div><h2 id="search-form-heading">Search delay records</h2><p>Try “Finch”, “Kennedy”, or choose a line below. Leave both blank to browse recent records.</p></div></div>
+    <form action="{{ url_for('search') }}" method="GET" class="search-form search-form-flex" role="search">
+        <div class="search-field search-field-main"><label for="station-query">Station name</label><input id="station-query" type="search" name="station" value="{{ station }}" placeholder="e.g. Finch, Kennedy, Bloor" maxlength="100" list="station-suggestions" autocomplete="off"><datalist id="station-suggestions">{% for name in stations %}<option value="{{ name }}">{% endfor %}</datalist></div>
+        <div class="search-field search-field-line"><label for="line-picker">Subway line <span class="field-optional">(optional)</span></label><select id="line-picker" name="line"><option value="">All lines</option>{% for item in lines %}<option value="{{ item }}" {% if line == item %}selected{% endif %}>{{ line_labels.get(item, item) }}</option>{% endfor %}</select></div>
+        <button class="button button-primary" type="submit">Show delays <span aria-hidden="true">→</span></button>
     </form>
-
-    <div class="search-results">
-        <p><em>Search query connections to the database will be linked here soon.</em></p>
-    </div>
+    <div class="search-quick"><span>Quick searches</span><a href="{{ url_for('search', station='Finch') }}">Finch</a><a href="{{ url_for('search', station='Kennedy') }}">Kennedy</a><a href="{{ url_for('search', line='BD') }}">Bloor–Danforth</a><a href="{{ url_for('search', line='YU') }}">Yonge–University</a></div>
+</section>
+<section class="content-panel results-panel" aria-labelledby="results-title">
+    <div class="section-heading section-heading-tight"><div><div class="overline">HISTORICAL RESULTS</div><h2 id="results-title">{% if station or line %}Matching incidents{% else %}Recent recorded delays{% endif %}</h2><p>{% if station or line %}Showing up to {{ result_limit }} most recent matches for your filters.{% else %}Showing up to {{ result_limit }} latest incidents with a positive delay duration.{% endif %}</p></div>{% if not error %}<span class="soft-tag">{{ '{:,}'.format(matches) }} matching records</span>{% endif %}</div>
+    {% if error %}<div class="notice notice-error" role="alert">{{ error }}</div>
+    {% elif rows %}
+    <div class="table-scroll"><table class="data-table"><thead><tr><th scope="col">Date</th><th scope="col">Station</th><th scope="col">Line</th><th scope="col" class="numeric">Delay</th><th scope="col">Reason code <a class="header-help" href="{{ url_for('codes') }}" title="What do TTC codes mean?">ⓘ</a></th></tr></thead><tbody>
+        {% for row in rows %}<tr><td class="nowrap">{{ row.date or '—' }}</td><td>{{ row.station or 'Not recorded' }}</td><td><span class="line-pill">{{ line_labels.get(row.line, row.line or '—') }}</span></td><td class="numeric metric-cell">{{ row.min_delay }} <span class="unit">min</span></td><td>{% if row.code %}<a class="code-pill code-link" href="{{ url_for('codes', q=row.code) }}" title="{{ row.code_description or 'Description not available — open the code guide' }}" aria-label="{{ row.code }}: {{ row.code_description or 'Open the code guide' }}">{{ row.code }} <span aria-hidden="true">↗</span></a><span class="code-description">{{ row.code_description or 'Description unavailable' }}</span>{% else %}<span class="unit">—</span>{% endif %}</td></tr>{% endfor %}
+    </tbody></table></div>
+    <p class="table-note">Click or hover over a delay code to learn what it means. Only positive-delay incidents are shown; these are not live alerts. A maximum of {{ result_limit }} records is displayed.</p>
+    {% else %}<div class="empty-state"><div class="empty-icon" aria-hidden="true">⌕</div><h3>No matching records</h3><p>Try only part of the station name, choose “All lines”, or remove one filter.</p><a class="text-link" href="{{ url_for('search') }}">Clear filters →</a></div>{% endif %}
+</section>
 {% endblock %}

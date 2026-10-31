@@ -2,17 +2,40 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>TTC Delay Analyzer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f8fa">
+    <meta name="description" content="Explore patterns in historical Toronto subway delay data.">
+    <title>{% block title %}TTC Delay Analyzer{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-    <nav class="navbar">
-        <a href="/">Home</a>
-        <a href="/search">Search Route</a>
-        <a href="/story">Our Story</a>
-    </nav>
-    <main class="container">
+    <header class="site-header">
+        <div class="nav-inner">
+            <a class="brand" href="{{ url_for('home') }}" aria-label="TTC Delay Analyzer home">
+                <span class="brand-symbol" aria-hidden="true"><span></span><span></span></span>
+                <span class="brand-copy">
+                    <span class="brand-title">Transit Insights</span>
+                    <span class="brand-subtitle">TTC Delay Analyzer</span>
+                </span>
+            </a>
+            <nav class="navbar" aria-label="Main navigation">
+                <a href="{{ url_for('home') }}" class="{% if request.endpoint == 'home' %}active{% endif %}" {% if request.endpoint == 'home' %}aria-current="page"{% endif %}>Overview</a>
+                <a href="{{ url_for('search') }}" class="{% if request.endpoint == 'search' %}active{% endif %}" {% if request.endpoint == 'search' %}aria-current="page"{% endif %}>Find delays</a>
+                <a href="{{ url_for('codes') }}" class="{% if request.endpoint == 'codes' %}active{% endif %}" {% if request.endpoint == 'codes' %}aria-current="page"{% endif %}>Code guide</a>
+                <a href="{{ url_for('story') }}" class="{% if request.endpoint == 'story' %}active{% endif %}" {% if request.endpoint == 'story' %}aria-current="page"{% endif %}>About</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container" id="main-content">
         {% block content %}{% endblock %}
     </main>
+
+    <footer class="site-footer">
+        <div class="footer-inner">
+            <span>Independent project · City of Toronto open data</span>
+            <span>Historical data, not live service updates</span>
+        </div>
+    </footer>
 </body>
 </html>
