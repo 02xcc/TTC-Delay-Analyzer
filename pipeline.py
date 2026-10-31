@@ -9,11 +9,10 @@ def get_data(url):
 		csv_data = io.StringIO(response.text)
 		df = pd.read_csv(csv_data)
 		return df
-
-	else:
-		print(f"Failed to retrieve the data. Status Code: {response.status_code})
-		return none
 	
-
+##	else:
+##		print(f"Failed to retrieve the data. Status Code: {response.status_code})
+##		return none;
+	
 
 
