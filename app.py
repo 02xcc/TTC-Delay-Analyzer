@@ -18,114 +18,122 @@ LINE_LABELS = {
     "SHP": "Line 4 · Sheppard",
 }
 RESULT_LIMIT = 50
-
-
-def _month_label(value):
-    if value is None:
-        return None
-    if hasattr(value, "strftime"):
-        return value.strftime("%b %Y")
-    return datetime.fromisoformat(str(value)[:10]).strftime("%b %Y")
-
 MIN_LINE_INCIDENTS = 20  # Avoid one-off line values dominating the overview.
 
 
 @app.route("/")
 def home():
+    mode_filter = request.args.get("mode", "all").strip().lower()
     try:
         with engine.connect() as conn:
             overview = conn.execute(text("""
                 SELECT COUNT(*) AS total,
                        COUNT(*) FILTER (WHERE min_delay > 0) AS delayed_incidents,
                        COALESCE(SUM(min_delay) FILTER (WHERE min_delay > 0), 0) AS delay_minutes,
-                       MIN(date) AS earliest, MAX(date) AS latest
-                FROM subway_delays
-            """)).mappings().one()
+                       MIN(event_date) AS earliest, MAX(event_date) AS latest
+                FROM all_delays
+                WHERE (:mode = 'all' OR mode = :mode)
+            """), {"mode": mode_filter}).mappings().one()
+            
             routes = conn.execute(text("""
-                SELECT line, COUNT(*) AS incidents,
+                SELECT mode, route, COUNT(*) AS incidents,
                        COALESCE(SUM(min_delay), 0) AS total_delay_minutes,
                        ROUND(AVG(min_delay), 1) AS mean_delay
-                FROM subway_delays
-                WHERE min_delay > 0 AND line IS NOT NULL AND TRIM(line) <> ''
-                GROUP BY line
+                FROM all_delays
+                WHERE min_delay > 0 AND route IS NOT NULL AND TRIM(route) <> ''
+                  AND (:mode = 'all' OR mode = :mode)
+                GROUP BY mode, route
                 HAVING COUNT(*) >= :minimum
-                ORDER BY total_delay_minutes DESC, incidents DESC, line
-            """), {"minimum": MIN_LINE_INCIDENTS}).mappings().all()
+                ORDER BY total_delay_minutes DESC, incidents DESC
+            """), {"minimum": MIN_LINE_INCIDENTS, "mode": mode_filter}).mappings().all()
+            
         max_minutes = max((r["total_delay_minutes"] for r in routes), default=0)
         return render_template(
             "home.html", routes=routes, stats=overview,
-            max_minutes=max_minutes, earliest_label=_month_label(overview["earliest"]),
-            latest_label=_month_label(overview["latest"]), minimum=MIN_LINE_INCIDENTS,
-            line_labels=LINE_LABELS, error=None,
+            max_minutes=max_minutes, minimum=MIN_LINE_INCIDENTS,
+            line_labels=LINE_LABELS, error=None, current_mode=mode_filter
         )
     except SQLAlchemyError:
         app.logger.exception("Unable to load TTC overview")
         return render_template(
             "home.html", routes=[], stats={}, max_minutes=0,
-            earliest_label=None, latest_label=None,
-            minimum=MIN_LINE_INCIDENTS, line_labels=LINE_LABELS,
+            minimum=MIN_LINE_INCIDENTS, line_labels=LINE_LABELS, current_mode=mode_filter,
             error="The database isn't available right now. Please try again.",
         ), 503
 
 
-def _search_options(conn):
-    # Use real TTC values, not hard-coded station names or guessed route codes.
-    stations = conn.execute(text("""
-        SELECT DISTINCT station FROM subway_delays
-        WHERE station IS NOT NULL AND TRIM(station) <> ''
-        ORDER BY station LIMIT 500
-    """)).scalars().all()
-    lines = conn.execute(text("""
-        SELECT line FROM subway_delays
-        WHERE min_delay > 0 AND line IS NOT NULL AND TRIM(line) <> ''
-        GROUP BY line HAVING COUNT(*) >= :minimum
-        ORDER BY COUNT(*) DESC, line
-    """), {"minimum": MIN_LINE_INCIDENTS}).scalars().all()
-    return stations, lines
+def _search_options(conn, mode):
+    # Fetch locations and routes specifically for the form datalists based on the view
+    locations = conn.execute(text("""
+        SELECT DISTINCT location FROM all_delays
+        WHERE location IS NOT NULL AND TRIM(location) <> ''
+          AND (:mode = 'all' OR mode = :mode)
+        ORDER BY location LIMIT 500
+    """), {"mode": mode}).scalars().all()
+    
+    routes = conn.execute(text("""
+        SELECT route FROM all_delays
+        WHERE min_delay > 0 AND route IS NOT NULL AND TRIM(route) <> ''
+          AND (:mode = 'all' OR mode = :mode)
+        GROUP BY route HAVING COUNT(*) >= :minimum
+        ORDER BY COUNT(*) DESC, route
+    """), {"minimum": MIN_LINE_INCIDENTS, "mode": mode}).scalars().all()
+    return locations, routes
 
 
 @app.route("/search")
 def search():
-    station = request.args.get("station", "").strip()
-    line = request.args.get("line", "").strip()
-    # Compatibility with previously shared /search?query=BD links.
-    legacy = request.args.get("query", "").strip()
-    if legacy and not station and not line:
-        if legacy.upper() in LINE_LABELS:
-            line = legacy.upper()
-        else:
-            station = legacy
+    mode = request.args.get("mode", "all").strip().lower()
+    location = request.args.get("location", "").strip()
+    route = request.args.get("route", "").strip()
+    
+    # Backward compatibility with previously shared /search?query=BD or /search?line=BD links.
+    legacy_query = request.args.get("query", "").strip()
+    legacy_station = request.args.get("station", "").strip()
+    legacy_line = request.args.get("line", "").strip()
+    
+    if not location and not route:
+        location = legacy_station
+        route = legacy_line
+        if legacy_query:
+            if legacy_query.upper() in LINE_LABELS:
+                route = legacy_query.upper()
+            else:
+                location = legacy_query
 
-    state = {"station": station, "line": line, "line_labels": LINE_LABELS,
-             "rows": [], "matches": 0, "stations": [], "lines": [], "error": None,
-             "result_limit": RESULT_LIMIT}
-    if len(station) > 100 or len(line) > 100:
+    state = {"location": location, "route": route, "mode": mode, "line_labels": LINE_LABELS,
+             "rows": [], "matches": 0, "locations": [], "routes": [], "error": None,
+             "limit": RESULT_LIMIT}
+             
+    if len(location) > 100 or len(route) > 100:
         state["error"] = "Search text is too long. Please use shorter names."
         return render_template("search.html", **state), 400
 
     try:
         with engine.connect() as conn:
-            state["stations"], state["lines"] = _search_options(conn)
-            # Never interpolate user input into the SQL itself.
-            params = {"station_pattern": f"%{station}%", "line": line,
-                      "limit": RESULT_LIMIT}
+            state["locations"], state["routes"] = _search_options(conn, mode)
+            params = {"location_pattern": f"%{location}%", "route": route, "mode": mode, "limit": RESULT_LIMIT}
+            
             filters = """
-                WHERE s.min_delay > 0
-                  AND (:station_pattern = '%%' OR LOWER(s.station) LIKE LOWER(:station_pattern))
-                  AND (:line = '' OR s.line = :line)
+                WHERE min_delay > 0
+                  AND (:mode = 'all' OR mode = :mode)
+                  AND (:location_pattern = '%%' OR LOWER(location) LIKE LOWER(:location_pattern))
+                  AND (:route = '' OR route = :route)
             """
+            
             state["matches"] = conn.execute(
-                text("SELECT COUNT(*) FROM subway_delays AS s " + filters), params
+                text("SELECT COUNT(*) FROM all_delays " + filters), params
             ).scalar_one()
+            
             state["rows"] = conn.execute(text("""
-                SELECT s.date, s.time, s.station, s.line, s.min_delay, s.code,
-                       c.description AS code_description
-                FROM subway_delays AS s
-                LEFT JOIN delay_codes AS c ON UPPER(s.code) = UPPER(c.code)
-            """ + filters + """
-                ORDER BY s.date DESC, s.time DESC
+                SELECT event_date AS date, event_time AS time, location AS station, route AS line, mode,
+                       min_delay, reason_code AS code, reason_description AS code_description
+                FROM all_delays
+                """ + filters + """
+                ORDER BY event_date DESC, event_time DESC
                 LIMIT :limit
             """), params).mappings().all()
+            
         return render_template("search.html", **state)
     except SQLAlchemyError:
         app.logger.exception("Unable to search TTC delays")
@@ -165,3 +173,4 @@ def health():
 
 if __name__ == "__main__":
     app.run(debug=os.getenv("FLASK_DEBUG") == "1", port=int(os.getenv("PORT", "5000")))
+

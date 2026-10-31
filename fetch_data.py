@@ -2,27 +2,29 @@
 import requests
 
 API_URL = "https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action/package_show"
-PACKAGE_ID = "ttc-subway-delay-data"
 TIMEOUT = 60
 
-
-def list_resources(session=requests):
-    response = session.get(API_URL, params={"id": PACKAGE_ID}, timeout=TIMEOUT)
+def list_resources(package_id="ttc-subway-delay-data", session=requests):
+    """Fetch resources for a specific CKAN package ID."""
+    response = session.get(API_URL, params={"id": package_id}, timeout=TIMEOUT)
     response.raise_for_status()
     result = response.json()
     if not result.get("success") or "resources" not in result.get("result", {}):
-        raise ValueError("Toronto Open Data returned an unexpected package response")
+        raise ValueError(f"Toronto Open Data returned an unexpected response for {package_id}")
     return result["result"]["resources"]
 
-
 def find_resource(resources, kind, formats=("CSV", "JSON")):
-    """Match the right named resource rather than the first CSV in the dataset."""
-    if kind == "delays":
+    """Match the right named resource based on mode."""
+    if kind == "subway_delays":
         marker = "ttc subway delay data since 2025"
+    elif kind == "bus_delays":
+        marker = "ttc bus delay data since 2025"
+    elif kind == "streetcar_delays":
+        marker = "ttc streetcar delay data since 2025"
     elif kind == "codes":
         marker = "code descriptions"
     else:
-        raise ValueError("kind must be 'delays' or 'codes'")
+        raise ValueError("kind must be 'subway_delays', 'bus_delays', 'streetcar_delays', or 'codes'")
 
     for fmt in formats:
         for resource in resources:
@@ -35,13 +37,17 @@ def find_resource(resources, kind, formats=("CSV", "JSON")):
         "Check the resource list returned by the TTC API."
     )
 
-
 def download_resource(resource, session=requests):
     response = session.get(resource["url"], timeout=120)
     response.raise_for_status()
     return response
 
-
 if __name__ == "__main__":
-    for entry in list_resources():
-        print(entry.get("name"), entry.get("format"), entry.get("url"))
+    # Test discovery for all three modes and print metadata inventory
+    for pkg in ["ttc-subway-delay-data", "ttc-bus-delay-data", "ttc-streetcar-delay-data"]:
+        print(f"\n--- PACKAGE: {pkg} ---")
+        try:
+            for entry in list_resources(pkg):
+                print(f"{entry.get('name')} | {entry.get('format')} | {entry.get('last_modified')} | {entry.get('url')}")
+        except Exception as e:
+            print(f"Failed to fetch {pkg}: {e}")

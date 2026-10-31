@@ -5,12 +5,21 @@
     <div class="eyebrow"><span class="eyebrow-dot"></span> Transit performance / Overview</div>
     <div class="intro-row">
         <div>
-            <h1 id="overview-title">Understand the impact<br><span class="heading-muted">of subway delays.</span></h1>
-            <p class="intro-description">Compare how often delays occur <em>and</em> how much time they add up to, using historical TTC data.</p>
+            <h1 id="overview-title">Understand the impact<br><span class="heading-muted">of transit delays.</span></h1>
+            <p class="intro-description">Compare how often delays occur <em>and</em> how much time they add up to across the TTC network, using historical data.</p>
         </div>
-        <a class="button button-primary intro-action" href="{{ url_for('search') }}">Search stations <span aria-hidden="true">→</span></a>
+        <a class="button button-primary intro-action" href="{{ url_for('search') }}">Search locations <span aria-hidden="true">→</span></a>
     </div>
 </section>
+
+<div class="search-quick" style="margin-bottom: 25px;">
+    <span style="font-weight: 650; color: #1c2b38;">Filter network:</span>
+    <a href="{{ url_for('home', mode='all') }}" {% if current_mode == 'all' or not current_mode %}style="background: #f8eded; color: var(--accent-dark); border-color: #eed6d9;"{% endif %}>All Modes</a>
+    <a href="{{ url_for('home', mode='subway') }}" {% if current_mode == 'subway' %}style="background: #f8eded; color: var(--accent-dark); border-color: #eed6d9;"{% endif %}>Subway</a>
+    <a href="{{ url_for('home', mode='bus') }}" {% if current_mode == 'bus' %}style="background: #f8eded; color: var(--accent-dark); border-color: #eed6d9;"{% endif %}>Bus</a>
+    <a href="{{ url_for('home', mode='streetcar') }}" {% if current_mode == 'streetcar' %}style="background: #f8eded; color: var(--accent-dark); border-color: #eed6d9;"{% endif %}>Streetcar</a>
+</div>
+
 <section class="metric-grid" aria-label="Dataset overview">
     <div class="metric-card">
         <p class="metric-label">Recorded delays</p>
@@ -24,8 +33,8 @@
     </div>
     <div class="metric-card">
         <p class="metric-label">Data coverage</p>
-        <p class="metric-value metric-value-dates">{% if earliest_label and latest_label %}{{ earliest_label }} <span class="date-separator">–</span> {{ latest_label }}{% else %}Not available{% endif %}</p>
-        <p class="metric-caption">Latest records imported from Toronto Open Data</p>
+        <p class="metric-value metric-value-dates">{% if stats.earliest and stats.latest %}{{ stats.earliest.strftime('%b %Y') }} <span class="date-separator">–</span> {{ stats.latest.strftime('%b %Y') }}{% else %}Not available{% endif %}</p>
+        <p class="metric-caption">Latest records imported for selected filter</p>
     </div>
 </section>
 <section class="content-panel" aria-labelledby="ranking-title">
@@ -35,19 +44,31 @@
             <h2 id="ranking-title">Where delays add up</h2>
             <p>Ranked by <strong>total recorded delay minutes</strong>—so frequent disruptions matter more than a single unusually long delay.</p>
         </div>
-        <span class="soft-tag">{{ minimum }}+ incidents per category</span>
+        <span class="soft-tag">{{ minimum }}+ incidents per route</span>
     </div>
     {% if error %}
         <div class="notice notice-error" role="alert">{{ error }}</div>
     {% elif routes %}
         <div class="table-scroll">
             <table class="data-table impact-table">
-                <thead><tr><th scope="col">Reported line</th><th scope="col">Total delay impact</th><th scope="col" class="numeric">Incidents</th><th scope="col" class="numeric">Avg. delay</th></tr></thead>
+                <thead>
+                    <tr>
+                        <th scope="col">Mode</th>
+                        <th scope="col">Reported route</th>
+                        <th scope="col">Total delay impact</th>
+                        <th scope="col" class="numeric">Incidents</th>
+                        <th scope="col" class="numeric">Avg. delay</th>
+                    </tr>
+                </thead>
                 <tbody>
                 {% for row in routes %}
                     <tr>
-                        <td><a class="line-pill line-pill-link" href="{{ url_for('search', line=row.line) }}">{{ line_labels.get(row.line, row.line) }}</a></td>
-                        <td class="impact-cell"><div class="impact-value">{{ '{:,}'.format(row.total_delay_minutes) }} <span class="unit">min combined</span></div><div class="impact-track" aria-hidden="true"><span style="width: {{ (100 * row.total_delay_minutes / max_minutes)|round|int if max_minutes else 0 }}%"></span></div></td>
+                        <td style="text-transform: capitalize; color: #687684; font-weight: 600; font-size: 12px;">{{ row.mode }}</td>
+                        <td><a class="line-pill line-pill-link" href="{{ url_for('search', mode=row.mode, route=row.route) }}">{{ row.route }}</a></td>
+                        <td class="impact-cell">
+                            <div class="impact-value">{{ '{:,}'.format(row.total_delay_minutes) }} <span class="unit">min combined</span></div>
+                            <div class="impact-track" aria-hidden="true"><span style="width: {{ (100 * row.total_delay_minutes / max_minutes)|round|int if max_minutes else 0 }}%"></span></div>
+                        </td>
                         <td class="numeric metric-cell">{{ '{:,}'.format(row.incidents) }}</td>
                         <td class="numeric">{{ '%.1f'|format(row.mean_delay) }} <span class="unit">min</span></td>
                     </tr>
@@ -55,10 +76,13 @@
                 </tbody>
             </table>
         </div>
-        <p class="table-note">Only incidents with positive delay minutes are included. Categories with fewer than {{ minimum }} incidents are excluded from this ranking to reduce one-off distortions. This is cumulative recorded delay time, not a per-trip reliability rate.</p>
+        <p class="table-note">Only incidents with positive delay minutes are included. Routes with fewer than {{ minimum }} incidents are excluded from this ranking to reduce one-off distortions. This is cumulative recorded delay time, not a per-trip reliability rate.</p>
     {% else %}
-        <div class="empty-state"><h3>No meaningful line comparison available yet</h3><p>Once enough records are available, you'll see the most frequently disrupted line categories here.</p></div>
+        <div class="empty-state">
+            <h3>No meaningful route comparison available yet</h3>
+            <p>Once enough records are available for this mode, you'll see the most frequently disrupted routes here.</p>
+        </div>
     {% endif %}
 </section>
-<div class="bottom-note"><span class="note-mark" aria-hidden="true">i</span> Historical TTC data; not live alerts. For individual incidents, use <a class="inline-link" href="{{ url_for('search') }}">station search</a>. For explanations, browse the <a class="inline-link" href="{{ url_for('codes') }}">delay code guide</a>.</div>
+<div class="bottom-note"><span class="note-mark" aria-hidden="true">i</span> Historical TTC data; not live alerts. For individual incidents, use <a class="inline-link" href="{{ url_for('search') }}">location search</a>. For explanations of subway records, browse the <a class="inline-link" href="{{ url_for('codes') }}">delay code guide</a>.</div>
 {% endblock %}
