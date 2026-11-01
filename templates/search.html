@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Explore delays · TTC Delay Analyzer{% endblock %}
 {% block content %}
-<section class="page-intro page-intro-compact" aria-labelledby="search-title">
+<section class="page-intro page-intro-compact page-intro-enhanced" aria-labelledby="search-title">
     <div class="eyebrow"><span class="eyebrow-dot"></span> Transit performance / Explore</div>
-    <h1 id="search-title">Find delays near <span class="heading-muted">your location.</span></h1>
+    <h1 id="search-title">Explore every <span class="heading-muted">delay.</span></h1>
     <p class="intro-description">Search by location, choose a route, or filter by transit mode to browse historical incidents.</p>
 </section>
 <section class="content-panel search-panel" aria-labelledby="search-form-heading">
@@ -70,19 +70,19 @@
                 <tr>
                     <td class="nowrap">{{ row.date or '—' }}<br><span style="font-size: 11.5px; color: #8a97a1;">{{ row.time or '' }}</span></td>
                     <td style="text-transform: capitalize;">{{ row.mode }}</td>
-                    <td><span class="line-pill">{{ row.line or '—' }}</span></td>
-                    <td>{{ row.station or 'Not recorded' }}</td>
+                    <td><span class="line-pill">{{ (row.line or 'Not recorded')|clean_display }}</span></td>
+                    <td>{{ (row.station or 'Not recorded')|clean_display }}</td>
                     <td class="numeric metric-cell">{{ row.min_delay }} <span class="unit">min</span></td>
-                    <td>
-                        {% if row.mode == 'subway' %}
-                            {% if row.code %}
-                                <a class="code-pill code-link" href="{{ url_for('codes', q=row.code) }}" title="{{ row.code_description or 'Description not available — open the code guide' }}" aria-label="{{ row.code }}: {{ row.code_description or 'Open the code guide' }}">{{ row.code }} <span aria-hidden="true">↗</span></a>
-                                <span class="code-description">{{ row.code_description or 'Not specified' }}</span>
+                    <td class="reason-cell">
+                        {% if row.code %}
+                            <a class="code-link code-chip" href="{{ url_for('codes', mode=row.mode, q=row.code) }}" aria-label="Look up {{ row.code }} in {{ row.mode }} code guide" title="View this code in the code guide">{{ row.code }}</a>
+                            {% if row.code_description and row.code_description|trim|upper != row.code|trim|upper %}
+                                <span class="code-description">{{ row.code_description|clean_display }}</span>
                             {% else %}
-                                <span class="unit">—</span>
+                                <span class="code-description code-missing">Description not published. Select the code to check the guide.</span>
                             {% endif %}
                         {% else %}
-                            <span class="code-description" style="max-width: none; color: #42505d; font-size: 12.5px;">{{ row.code_description or 'Not specified' }}</span>
+                            <span class="code-description">No reason recorded</span>
                         {% endif %}
                     </td>
                 </tr>
@@ -90,7 +90,7 @@
             </tbody>
         </table>
     </div>
-    <p class="table-note">Click or hover over a subway delay code to learn what it means. Bus and streetcar incidents display their recorded reason or code. Only positive-delay incidents are shown; these are not live alerts.</p>
+    <p class="table-note">Select a code to open its matching transit mode in the code guide. Published descriptions appear beneath codes. Only positive-delay incidents are shown; these are not live alerts.</p>
     {% else %}
     <div class="empty-state">
         <div class="empty-icon" aria-hidden="true">⌕</div>

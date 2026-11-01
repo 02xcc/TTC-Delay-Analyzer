@@ -1,5 +1,6 @@
 """TTC Delay Analyzer: historical impact summaries, station search, code glossary."""
 import os
+import unicodedata
 from datetime import datetime
 
 from flask import Flask, render_template, request
@@ -34,6 +35,20 @@ LINE_LABELS = {
     "SRT": "Line 3 · Scarborough RT (historical)",
     "SHP": "Line 4 · Sheppard",
 }
+def clean_display(value):
+    """ASCII-friendly display; preserve stored TTC text unchanged."""
+    if value is None:
+        return ""
+    text_value = str(value)
+    replacements = {"â€™": "'", "â€“": "-", "â€”": "-", "Â": "", "�": ""}
+    for original, replacement in replacements.items():
+        text_value = text_value.replace(original, replacement)
+    text_value = unicodedata.normalize("NFKD", text_value)
+    return " ".join("".join(ch for ch in text_value if not unicodedata.combining(ch)).split())
+
+
+app.jinja_env.filters["clean_display"] = clean_display
+
 RESULT_LIMIT = 50
 MIN_LINE_INCIDENTS = 20  # Avoid one-off line values dominating the overview.
 
@@ -157,19 +172,33 @@ def search():
 def codes():
     q = request.args.get("q", "").strip()
     if len(q) > 70:
-        return render_template("codes.html", q=q, rows=[], error="Search is too long."), 400
+        return render_template("codes.html", q=q, mode="all", rows=[], error="Search is too long."), 400
+    mode = request.args.get("mode", "all").strip().lower()
+    if mode not in ("all", "subway", "bus", "streetcar"):
+        return render_template("codes.html", q=q, mode="all", rows=[], error="Invalid transit mode."), 400
     try:
         with engine.connect() as conn:
+            # Mode-aware descriptions so matching codes do not borrow other modes' meanings.
+            # Include the existing subway dictionary as a fallback for legacy records.
             rows = conn.execute(text("""
-                SELECT code, description FROM delay_codes
-                WHERE (:pattern = '%%' OR LOWER(code) LIKE LOWER(:pattern)
-                       OR LOWER(description) LIKE LOWER(:pattern))
-                ORDER BY code LIMIT 300
-            """), {"pattern": f"%{q}%"}).mappings().all()
-        return render_template("codes.html", q=q, rows=rows, error=None)
+                WITH glossary AS (
+                    SELECT mode, code, description FROM mode_delay_codes
+                    UNION ALL
+                    SELECT 'subway' AS mode, d.code, d.description FROM delay_codes d
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM mode_delay_codes m
+                        WHERE m.mode = 'subway' AND m.code = d.code
+                    )
+                )
+                SELECT mode, code, description FROM glossary
+                WHERE (:mode = 'all' OR mode = :mode)
+                  AND (:q = '' OR code ILIKE :pattern OR description ILIKE :pattern)
+                ORDER BY mode, code LIMIT 300
+            """), {"mode": mode, "q": q, "pattern": f"%{q}%"}).mappings().all()
+        return render_template("codes.html", q=q, mode=mode, rows=rows, error=None)
     except SQLAlchemyError:
         app.logger.exception("Unable to load TTC code descriptions")
-        return render_template("codes.html", q=q, rows=[],
+        return render_template("codes.html", q=q, mode=mode, rows=[],
                                error="Code descriptions are unavailable right now."), 503
 
 

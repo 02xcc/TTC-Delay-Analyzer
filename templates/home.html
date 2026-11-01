@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Overview · TTC Delay Analyzer{% endblock %}
 {% block content %}
-<section class="page-intro" aria-labelledby="overview-title">
+<section class="page-intro page-intro-enhanced" aria-labelledby="overview-title">
     <div class="eyebrow"><span class="eyebrow-dot"></span> Transit performance / Overview</div>
     <div class="intro-row">
         <div>
@@ -64,7 +64,7 @@
                 {% for row in routes %}
                     <tr>
                         <td style="text-transform: capitalize; color: #687684; font-weight: 600; font-size: 12px;">{{ row.mode }}</td>
-                        <td><a class="line-pill line-pill-link" href="{{ url_for('search', mode=row.mode, route=row.route) }}">{{ row.route }}</a></td>
+                        <td><a class="line-pill line-pill-link" href="{{ url_for('search', mode=row.mode, route=row.route) }}">{{ row.route|clean_display }}</a></td>
                         <td class="impact-cell">
                             <div class="impact-value">{{ '{:,}'.format(row.total_delay_minutes) }} <span class="unit">min combined</span></div>
                             <div class="impact-track" aria-hidden="true"><span style="width: {{ (100 * row.total_delay_minutes / max_minutes)|round|int if max_minutes else 0 }}%"></span></div>
