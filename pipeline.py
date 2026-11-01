@@ -97,7 +97,7 @@ def normalize_surface(raw, mode):
     }
     for source, target in aliases.items():
         if source in df.columns and target not in df.columns:
-            df.rename(columns={source: target}, inplace=True)
+            df = df.rename(columns={source: target})
         
     missing = SURFACE_REQUIRED - set(df.columns)
     if missing:
