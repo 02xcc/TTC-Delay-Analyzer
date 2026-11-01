@@ -10,6 +10,19 @@ from sqlalchemy.exc import SQLAlchemyError
 from db import engine
 
 app = Flask(__name__)
+import unicodedata
+
+@app.template_filter("clean_display")
+def clean_display(value):
+    if value is None:
+        return ""
+
+    text = unicodedata.normalize("NFKD", str(value))
+    return "".join(
+        char for char in text
+        if not unicodedata.combining(char)
+    )
+
 limiter = Limiter(
     key_func=get_remote_address,
     app=app,
