@@ -1,34 +1,34 @@
 """TTC Delay Analyzer: historical impact summaries, station search, code glossary."""
 import os
-from datetime import datetime
+import unicodedata
+
+from flask import Flask, render_template, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from flask import Flask, render_template, request
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from db import engine
 
 app = Flask(__name__)
-import unicodedata
+
 
 @app.template_filter("clean_display")
 def clean_display(value):
+    """Strip accents/combining marks so names display consistently."""
     if value is None:
         return ""
+    normalized = unicodedata.normalize("NFKD", str(value))
+    return "".join(char for char in normalized if not unicodedata.combining(char))
 
-    text = unicodedata.normalize("NFKD", str(value))
-    return "".join(
-        char for char in text
-        if not unicodedata.combining(char)
-    )
 
 limiter = Limiter(
     key_func=get_remote_address,
     app=app,
     default_limits=["120 per minute"],
-    storage_uri="memory://"
+    storage_uri="memory://",
 )
+
 # Friendly labels for recognized TTC source codes; unknown categories stay unchanged.
 LINE_LABELS = {
     "YU": "Line 1 · Yonge–University",
@@ -36,13 +36,20 @@ LINE_LABELS = {
     "SRT": "Line 3 · Scarborough RT (historical)",
     "SHP": "Line 4 · Sheppard",
 }
+VALID_MODES = {"all", "subway", "bus", "streetcar"}
 RESULT_LIMIT = 50
 MIN_LINE_INCIDENTS = 20  # Avoid one-off line values dominating the overview.
 
 
+def _get_mode():
+    """Read ?mode= and fall back to 'all' for anything unrecognized."""
+    mode = request.args.get("mode", "all").strip().lower()
+    return mode if mode in VALID_MODES else "all"
+
+
 @app.route("/")
 def home():
-    mode_filter = request.args.get("mode", "all").strip().lower()
+    mode_filter = _get_mode()
     try:
         with engine.connect() as conn:
             overview = conn.execute(text("""
@@ -53,7 +60,7 @@ def home():
                 FROM all_delays
                 WHERE (:mode = 'all' OR mode = :mode)
             """), {"mode": mode_filter}).mappings().one()
-            
+
             routes = conn.execute(text("""
                 SELECT mode, route, COUNT(*) AS incidents,
                        COALESCE(SUM(min_delay), 0) AS total_delay_minutes,
@@ -65,12 +72,12 @@ def home():
                 HAVING COUNT(*) >= :minimum
                 ORDER BY total_delay_minutes DESC, incidents DESC
             """), {"minimum": MIN_LINE_INCIDENTS, "mode": mode_filter}).mappings().all()
-            
+
         max_minutes = max((r["total_delay_minutes"] for r in routes), default=0)
         return render_template(
             "home.html", routes=routes, stats=overview,
             max_minutes=max_minutes, minimum=MIN_LINE_INCIDENTS,
-            line_labels=LINE_LABELS, error=None, current_mode=mode_filter
+            line_labels=LINE_LABELS, error=None, current_mode=mode_filter,
         )
     except SQLAlchemyError:
         app.logger.exception("Unable to load TTC overview")
@@ -82,14 +89,14 @@ def home():
 
 
 def _search_options(conn, mode):
-    # Fetch locations and routes specifically for the form datalists based on the view
+    """Locations and routes for the search form, limited to the selected mode."""
     locations = conn.execute(text("""
         SELECT DISTINCT location FROM all_delays
         WHERE location IS NOT NULL AND TRIM(location) <> ''
           AND (:mode = 'all' OR mode = :mode)
         ORDER BY location LIMIT 500
     """), {"mode": mode}).scalars().all()
-    
+
     routes = conn.execute(text("""
         SELECT route FROM all_delays
         WHERE min_delay > 0 AND route IS NOT NULL AND TRIM(route) <> ''
@@ -102,15 +109,15 @@ def _search_options(conn, mode):
 
 @app.route("/search")
 def search():
-    mode = request.args.get("mode", "all").strip().lower()
+    mode = _get_mode()
     location = request.args.get("location", "").strip()
     route = request.args.get("route", "").strip()
-    
+
     # Backward compatibility with previously shared /search?query=BD or /search?line=BD links.
     legacy_query = request.args.get("query", "").strip()
     legacy_station = request.args.get("station", "").strip()
     legacy_line = request.args.get("line", "").strip()
-    
+
     if not location and not route:
         location = legacy_station
         route = legacy_line
@@ -123,7 +130,7 @@ def search():
     state = {"location": location, "route": route, "mode": mode, "line_labels": LINE_LABELS,
              "rows": [], "matches": 0, "locations": [], "routes": [], "error": None,
              "limit": RESULT_LIMIT}
-             
+
     if len(location) > 100 or len(route) > 100:
         state["error"] = "Search text is too long. Please use shorter names."
         return render_template("search.html", **state), 400
@@ -131,19 +138,20 @@ def search():
     try:
         with engine.connect() as conn:
             state["locations"], state["routes"] = _search_options(conn, mode)
-            params = {"location_pattern": f"%{location}%", "route": route, "mode": mode, "limit": RESULT_LIMIT}
-            
+            params = {"location_pattern": f"%{location}%", "route": route,
+                      "mode": mode, "limit": RESULT_LIMIT}
+
             filters = """
                 WHERE min_delay > 0
                   AND (:mode = 'all' OR mode = :mode)
                   AND (:location_pattern = '%%' OR LOWER(location) LIKE LOWER(:location_pattern))
                   AND (:route = '' OR route = :route)
             """
-            
+
             state["matches"] = conn.execute(
                 text("SELECT COUNT(*) FROM all_delays " + filters), params
             ).scalar_one()
-            
+
             state["rows"] = conn.execute(text("""
                 SELECT report_date AS date, time, location AS station, route AS line, mode,
                        min_delay, code, incident AS code_description
@@ -152,7 +160,7 @@ def search():
                 ORDER BY report_date DESC, time DESC
                 LIMIT :limit
             """), params).mappings().all()
-            
+
         return render_template("search.html", **state)
     except SQLAlchemyError:
         app.logger.exception("Unable to search TTC delays")
@@ -163,20 +171,24 @@ def search():
 @app.route("/codes")
 def codes():
     q = request.args.get("q", "").strip()
+    mode = _get_mode()
     if len(q) > 70:
-        return render_template("codes.html", q=q, rows=[], error="Search is too long."), 400
+        return render_template("codes.html", q=q, mode=mode, rows=[],
+                               error="Search is too long."), 400
     try:
         with engine.connect() as conn:
+            # mode_delay_codes holds the published glossary for subway, bus and streetcar.
             rows = conn.execute(text("""
-                SELECT code, description FROM delay_codes
-                WHERE (:pattern = '%%' OR LOWER(code) LIKE LOWER(:pattern)
+                SELECT mode, code, description FROM mode_delay_codes
+                WHERE (:mode = 'all' OR mode = :mode)
+                  AND (:pattern = '%%' OR LOWER(code) LIKE LOWER(:pattern)
                        OR LOWER(description) LIKE LOWER(:pattern))
-                ORDER BY code LIMIT 300
-            """), {"pattern": f"%{q}%"}).mappings().all()
-        return render_template("codes.html", q=q, rows=rows, error=None)
+                ORDER BY code, mode LIMIT 300
+            """), {"pattern": f"%{q}%", "mode": mode}).mappings().all()
+        return render_template("codes.html", q=q, mode=mode, rows=rows, error=None)
     except SQLAlchemyError:
         app.logger.exception("Unable to load TTC code descriptions")
-        return render_template("codes.html", q=q, rows=[],
+        return render_template("codes.html", q=q, mode=mode, rows=[],
                                error="Code descriptions are unavailable right now."), 503
 
 
@@ -192,4 +204,3 @@ def health():
 
 if __name__ == "__main__":
     app.run(debug=os.getenv("FLASK_DEBUG") == "1", port=int(os.getenv("PORT", "5000")))
-
