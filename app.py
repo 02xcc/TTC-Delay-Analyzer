@@ -3,12 +3,29 @@ import os
 from datetime import datetime
 
 from flask import Flask, render_template, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from werkzeug.middleware.proxy_fix import ProxyFix
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from db import engine
 
 app = Flask(__name__)
+
+# Render runs Flask behind its reverse proxy. Trust only the proxy hop
+# for the originating client IP; do not enable this for an untrusted direct proxy.
+if os.getenv("RENDER", "").lower() == "true":
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
+
+# Per-process storage is suitable for a starter single-worker deployment.
+# Use Redis/shared storage if deploying multiple workers or instances.
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=["120 per minute"],
+    storage_uri="memory://",
+)
 
 # Friendly labels for recognized TTC source codes; unknown categories stay unchanged.
 LINE_LABELS = {
@@ -30,7 +47,7 @@ def home():
                 SELECT COUNT(*) AS total,
                        COUNT(*) FILTER (WHERE min_delay > 0) AS delayed_incidents,
                        COALESCE(SUM(min_delay) FILTER (WHERE min_delay > 0), 0) AS delay_minutes,
-                       MIN(event_date) AS earliest, MAX(event_date) AS latest
+                       MIN(report_date) AS earliest, MAX(report_date) AS latest
                 FROM all_delays
                 WHERE (:mode = 'all' OR mode = :mode)
             """), {"mode": mode_filter}).mappings().one()
@@ -62,78 +79,72 @@ def home():
         ), 503
 
 
-def _search_options(conn, mode):
-    # Fetch locations and routes specifically for the form datalists based on the view
-    locations = conn.execute(text("""
-        SELECT DISTINCT location FROM all_delays
-        WHERE location IS NOT NULL AND TRIM(location) <> ''
-          AND (:mode = 'all' OR mode = :mode)
-        ORDER BY location LIMIT 500
-    """), {"mode": mode}).scalars().all()
-    
-    routes = conn.execute(text("""
-        SELECT route FROM all_delays
-        WHERE min_delay > 0 AND route IS NOT NULL AND TRIM(route) <> ''
-          AND (:mode = 'all' OR mode = :mode)
-        GROUP BY route HAVING COUNT(*) >= :minimum
-        ORDER BY COUNT(*) DESC, route
-    """), {"minimum": MIN_LINE_INCIDENTS, "mode": mode}).scalars().all()
-    return locations, routes
-
-
 @app.route("/search")
+@limiter.limit("30 per minute")
 def search():
     mode = request.args.get("mode", "all").strip().lower()
     location = request.args.get("location", "").strip()
     route = request.args.get("route", "").strip()
-    
-    # Backward compatibility with previously shared /search?query=BD or /search?line=BD links.
-    legacy_query = request.args.get("query", "").strip()
-    legacy_station = request.args.get("station", "").strip()
-    legacy_line = request.args.get("line", "").strip()
-    
-    if not location and not route:
-        location = legacy_station
-        route = legacy_line
-        if legacy_query:
-            if legacy_query.upper() in LINE_LABELS:
-                route = legacy_query.upper()
-            else:
-                location = legacy_query
 
-    state = {"location": location, "route": route, "mode": mode, "line_labels": LINE_LABELS,
-             "rows": [], "matches": 0, "locations": [], "routes": [], "error": None,
-             "limit": RESULT_LIMIT}
-             
+    # Keep older links working, while the form uses location and route.
+    if not location and not route:
+        location = request.args.get("station", "").strip()
+        route = request.args.get("line", "").strip()
+        legacy = request.args.get("query", "").strip()
+        if legacy:
+            if legacy.upper() in LINE_LABELS:
+                route = legacy.upper()
+            else:
+                location = legacy
+
+    state = {"mode": mode, "location": location, "route": route,
+             "rows": [], "matches": 0, "error": None,
+             "limit": RESULT_LIMIT, "line_labels": LINE_LABELS}
+
+    if mode not in ("all", "subway", "bus", "streetcar"):
+        state["error"] = "Choose a valid transit mode."
+        return render_template("search.html", **state), 400
     if len(location) > 100 or len(route) > 100:
         state["error"] = "Search text is too long. Please use shorter names."
         return render_template("search.html", **state), 400
 
+    # Build only predefined SQL fragments; all user input remains bound parameters.
+    filters = ["min_delay > 0"]
+    params = {"limit": RESULT_LIMIT}
+    if mode != "all":
+        filters.append("mode = :mode")
+        params["mode"] = mode
+    if location:
+        # Treat %, _ and backslash as text, rather than SQL LIKE wildcards.
+        escaped = (location.replace("\\", "\\\\")
+                           .replace("%", "\\%")
+                           .replace("_", "\\_"))
+        filters.append("location ILIKE :location_pattern ESCAPE '\\'")
+        params["location_pattern"] = f"%{escaped}%"
+    if route:
+        # Accept route labels such as '25 DON MILLS' when searching for '25'.
+        escaped_route = (route.replace("\\", "\\\\")
+                              .replace("%", "\\%")
+                              .replace("_", "\\_"))
+        filters.append("(route ILIKE :route_exact OR route ILIKE :route_prefix ESCAPE '\\')")
+        params["route_exact"] = route
+        params["route_prefix"] = f"{escaped_route} %"
+
+    where_clause = " WHERE " + " AND ".join(filters)
     try:
         with engine.connect() as conn:
-            state["locations"], state["routes"] = _search_options(conn, mode)
-            params = {"location_pattern": f"%{location}%", "route": route, "mode": mode, "limit": RESULT_LIMIT}
-            
-            filters = """
-                WHERE min_delay > 0
-                  AND (:mode = 'all' OR mode = :mode)
-                  AND (:location_pattern = '%%' OR LOWER(location) LIKE LOWER(:location_pattern))
-                  AND (:route = '' OR route = :route)
-            """
-            
             state["matches"] = conn.execute(
-                text("SELECT COUNT(*) FROM all_delays " + filters), params
+                text("SELECT COUNT(*) FROM all_delays" + where_clause), params
             ).scalar_one()
-            
             state["rows"] = conn.execute(text("""
-                SELECT event_date AS date, event_time AS time, location AS station, route AS line, mode,
-                       min_delay, reason_code AS code, reason_description AS code_description
+                SELECT report_date AS date, time, location AS station,
+                       route AS line, mode, min_delay, code,
+                       incident AS code_description
                 FROM all_delays
-                """ + filters + """
-                ORDER BY event_date DESC, event_time DESC
+            """ + where_clause + """
+                ORDER BY report_date DESC, time DESC NULLS LAST
                 LIMIT :limit
             """), params).mappings().all()
-            
         return render_template("search.html", **state)
     except SQLAlchemyError:
         app.logger.exception("Unable to search TTC delays")
@@ -142,6 +153,7 @@ def search():
 
 
 @app.route("/codes")
+@limiter.limit("60 per minute")
 def codes():
     q = request.args.get("q", "").strip()
     if len(q) > 70:

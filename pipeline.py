@@ -85,9 +85,19 @@ def normalize_surface(raw, mode):
     df = raw.copy()
     df.columns = [str(col).strip().lower().replace(" ", "_").replace(".", "_") for col in df.columns]
     
-    # Surface files occasionally use 'date' instead of 'report_date'
-    if "date" in df.columns and "report_date" not in df.columns:
-        df.rename(columns={"date": "report_date"}, inplace=True)
+    # TTC's 2025+ CSVs changed several surface-mode field names.
+    # Map both the newer subway-style headers and the older bus/streetcar headers
+    # onto the stable columns in our bus_delays and streetcar_delays tables.
+    aliases = {
+        "date": "report_date",
+        "line": "route",
+        "station": "location",
+        "code": "incident",  # 2025+ uses delay codes instead of free-text reasons.
+        "bound": "direction",
+    }
+    for source, target in aliases.items():
+        if source in df.columns and target not in df.columns:
+            df.rename(columns={source: target}, inplace=True)
         
     missing = SURFACE_REQUIRED - set(df.columns)
     if missing:
@@ -99,12 +109,30 @@ def normalize_surface(raw, mode):
         if column not in df:
             df[column] = None
 
+    # Some source exports contain incomplete rows with no route or date.
+    # These cannot be imported (report_date is NOT NULL), but valid rows
+    # should not be discarded because a few source rows are incomplete.
+    required_values = df[["report_date", "route"]].astype("string").apply(lambda col: col.str.strip())
+    incomplete = required_values.isna().any(axis=1) | required_values.eq("").any(axis=1)
+    skipped = int(incomplete.sum())
+    if skipped:
+        print(f"{mode.title()}: skipping {skipped} rows with missing date or route.")
+        df = df.loc[~incomplete].copy()
+    if df.empty:
+        raise ValueError(f"No usable {mode} rows remain after filtering missing dates/routes")
+
+    # Keep errors='raise': malformed non-empty dates must fail validation.
     df["report_date"] = pd.to_datetime(df["report_date"], errors="raise").dt.date
     df["time"] = df["time"].map(parse_time)
 
     for column in ("min_delay", "min_gap"):
-        numeric = pd.to_numeric(df[column], errors="coerce")
-        invalid = numeric.isna() & df[column].notna() & (df[column].astype(str).str.strip() != "")
+        # In 2025+ exports, some missing numeric values are the literal "None".
+        # Keep these as SQL NULL, not as the number 0.
+        cleaned = df[column].astype("string").str.strip()
+        missing = cleaned.str.lower().isin(["", "none", "null", "nan", "n/a"])
+        cleaned = cleaned.mask(missing)
+        numeric = pd.to_numeric(cleaned, errors="coerce")
+        invalid = numeric.isna() & cleaned.notna()
         if invalid.any():
             raise ValueError(f"Invalid numeric value in {column} for {mode}")
         df[column] = numeric.astype("Int64").astype(object).where(numeric.notna(), None)
@@ -135,6 +163,21 @@ def normalize_codes(resource, response):
     if not codes:
         raise ValueError("Code resource had no usable codes")
     return [{"code": code, "description": desc} for code, desc in codes.items()]
+
+def save_mode_codes(resources, mode, database_engine):
+    """Upsert the published delay-code glossary for one TTC transit mode."""
+    resource = find_resource(resources, "codes", formats=("CSV", "JSON"))
+    entries = normalize_codes(resource, download_resource(resource))
+    rows = [{"mode": mode, **entry} for entry in entries]
+    with database_engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO mode_delay_codes (mode, code, description)
+            VALUES (:mode, :code, :description)
+            ON CONFLICT (mode, code) DO UPDATE
+            SET description = EXCLUDED.description
+        """), rows)
+    print(f"{mode.title()} code descriptions: {len(rows)} imported.")
+
 
 def first_month_to_keep(latest_date, months_to_keep):
     if months_to_keep < 1:
@@ -200,6 +243,7 @@ def run():
     
     cutoff, latest, count = refresh_database(delays, "subway_delays", "date", months_to_keep, engine, codes)
     print(f"Subway Success: {count} rows retained ({cutoff} through {latest}).")
+    save_mode_codes(subway_res, "subway", engine)
 
     # 2. Bus Data Refresh
     print("\nFetching Bus data...")
@@ -208,6 +252,7 @@ def run():
     bus_data = normalize_surface(parse_resource(bus_resource, download_resource(bus_resource)), "bus")
     cutoff, latest, count = refresh_database(bus_data, "bus_delays", "report_date", months_to_keep, engine)
     print(f"Bus Success: {count} rows retained ({cutoff} through {latest}).")
+    save_mode_codes(bus_res, "bus", engine)
 
     # 3. Streetcar Data Refresh
     print("\nFetching Streetcar data...")
@@ -216,6 +261,7 @@ def run():
     streetcar_data = normalize_surface(parse_resource(streetcar_resource, download_resource(streetcar_resource)), "streetcar")
     cutoff, latest, count = refresh_database(streetcar_data, "streetcar_delays", "report_date", months_to_keep, engine)
     print(f"Streetcar Success: {count} rows retained ({cutoff} through {latest}).")
+    save_mode_codes(streetcar_res, "streetcar", engine)
 
 if __name__ == "__main__":
     run()

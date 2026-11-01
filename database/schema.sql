@@ -137,3 +137,12 @@ SELECT
     st.direction,
     st.vehicle
 FROM streetcar_delays AS st;
+
+CREATE TABLE IF NOT EXISTS mode_delay_codes (
+    mode TEXT NOT NULL,
+    code VARCHAR(20) NOT NULL,
+    description TEXT,
+    PRIMARY KEY (mode, code),
+    CONSTRAINT valid_transit_mode
+        CHECK (mode IN ('subway', 'bus', 'streetcar'))
+);

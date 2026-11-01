@@ -6,3 +6,4 @@ requests>=2.31,<3
 pandas>=2.1,<4
 gunicorn>=22,<25
 psycopg[binary]>=3.2,<4
+Flask-Limiter>=4,<5
