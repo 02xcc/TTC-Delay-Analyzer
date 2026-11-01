@@ -1,0 +1,38 @@
+name: Monthly TTC Data Update
+
+on:
+  schedule:
+    - cron: "0 9 5 * *"
+      timezone: "America/Toronto"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ttc-monthly-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Update TTC database
+        env:
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          ROLLING_MONTHS: "12"
+        run: python pipeline.py
